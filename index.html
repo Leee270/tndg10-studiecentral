@@ -242,17 +242,51 @@ function el(tag, attrs={}, children=[]){
   return e;
 }
 
-// ---------- session stats (in-memory only, resets on reload) ----------
+// ---------- persistent stats (saved in this browser via localStorage) ----------
+const STORAGE_KEY = 'tndg10_studiecentral_v1';
+
+function loadSession(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return {attempts:[], missedTentorna:[], missedStudy:[]};
+    const parsed = JSON.parse(raw);
+    return {
+      attempts: parsed.attempts || [],
+      missedTentorna: parsed.missedTentorna || [],
+      missedStudy: parsed.missedStudy || [],
+    };
+  }catch(e){ return {attempts:[], missedTentorna:[], missedStudy:[]}; }
+}
+
+const _loaded = loadSession();
 const SESSION = {
-  attempts: [], // {mode, cat, correct}
-  missedTentorna: new Set(),
-  missedStudy: new Set(),
+  attempts: _loaded.attempts,
+  missedTentorna: new Set(_loaded.missedTentorna),
+  missedStudy: new Set(_loaded.missedStudy),
 };
+
+function persistSession(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      attempts: SESSION.attempts,
+      missedTentorna: [...SESSION.missedTentorna],
+      missedStudy: [...SESSION.missedStudy],
+    }));
+  }catch(e){ /* storage unavailable (e.g. some sandboxed previews) - stats just stay in-memory */ }
+}
 
 function recordAttempt(mode, cat, correct, qid, isTentorna){
   SESSION.attempts.push({mode, cat, correct});
   const bucket = isTentorna ? SESSION.missedTentorna : SESSION.missedStudy;
   if(correct) bucket.delete(qid); else bucket.add(qid);
+  persistSession();
+}
+
+function resetSession(){
+  SESSION.attempts = [];
+  SESSION.missedTentorna = new Set();
+  SESSION.missedStudy = new Set();
+  persistSession();
 }
 
 // ---------- routing ----------
@@ -264,6 +298,7 @@ const TABS = [
   {id:'weak', label:'Svaga områden'},
   {id:'flashcards', label:'Studiekort'},
   {id:'dd26', label:'DD26 förkortningar'},
+  {id:'cli', label:'CLI-kommandon'},
   {id:'stats', label:'Statistik'},
 ];
 let current = 'home';
@@ -303,7 +338,7 @@ RENDERERS.home = (view)=>{
       el('h3', {}, 'Tre verktyg, en sida'),
       el('p', {}, `Det här samlar TNDG10-TRAINER (${TENTORNA.length} tentafrågor), TNDG10-STUDY-TRAINER (${STUDY.length} studiefrågor med minnesknep) och DD26-V1.0 (${DD26.length} förkortningar) på en webbsida du kan öppna direkt i webbläsaren — på skolans dator, mobilen eller hemma. Ingen terminal, ingen VMware, ingen Ubuntu-installation behövs.`),
       el('div', {class:'stat-row'}, [
-        el('div', {class:'stat-box'}, [el('div', {class:'num'}, String(totalAttempts)), el('div', {class:'lbl'}, 'FRÅGOR DENNA SESSION')]),
+        el('div', {class:'stat-box'}, [el('div', {class:'num'}, String(totalAttempts)), el('div', {class:'lbl'}, 'FRÅGOR BESVARADE TOTALT')]),
         el('div', {class:'stat-box'}, [el('div', {class:'num'}, pct+'%'), el('div', {class:'lbl'}, 'TRÄFFSÄKERHET')]),
         el('div', {class:'stat-box'}, [el('div', {class:'num'}, String(SESSION.missedStudy.size + SESSION.missedTentorna.size)), el('div', {class:'lbl'}, 'ATT REPETERA')]),
       ]),
@@ -674,15 +709,292 @@ RENDERERS['dd26-quiz'] = (view, opts)=>{
 };
 
 // =====================================================================
+// CLI-KOMMANDON — genomgång + övning (Filips fusklapp)
+// =====================================================================
+const CLI_GUIDE = [
+  {title:'Lösenord på enable (privilegerat läge)', lines:[
+    'hostname# enable secret xxx   (eller: enable password xxx)',
+    'hostname# exit',
+  ]},
+  {title:'Lösenord på själva console-porten', lines:[
+    'hostname# configure terminal',
+    'hostname(config)# line console 0',
+    'hostname(config-line)# password xxx',
+    'hostname(config-line)# login',
+    'hostname(config-line)# exit',
+  ]},
+  {title:'Lösenord på fjärranslutning (Telnet/SSH)', lines:[
+    'HN> enable',
+    'HN# configure terminal',
+    'HN(config)# line vty 0 15',
+    'HN(config-line)# password xxx',
+    'HN(config-line)# login',
+    'HN(config-line)# exit',
+  ]},
+  {title:'Spara konfigurationen', lines:[
+    'hostname# copy running-config startup-config',
+  ]},
+  {title:'Kryptera lösenorden i running-config', lines:[
+    'hostname(config)# service password-encryption',
+  ]},
+  {title:'Sätta en banner', lines:[
+    'hostname(config)# banner motd "xxxxx"',
+  ]},
+  {title:'IP på en VLAN på switch', lines:[
+    'hostname# configure terminal',
+    'hostname(config)# interface vlan 1',
+    'hostname(config-if)# ip address <ipv4> <subnetmask>',
+    'hostname(config-if)# no shutdown   (för att öppna den)',
+    'hostname(config-if)# exit',
+  ]},
+  {title:'IP på en router', lines:[
+    'hostname# configure terminal',
+    'hostname(config)# interface g0/0   (slotten den är kopplad i)',
+    'hostname(config-if)# ip address <ipv4> <subnetmask>',
+    'hostname(config-if)# no shutdown   (för att öppna den)',
+    'hostname(config-if)# exit',
+  ]},
+  {title:'Bra att kunna', lines:[
+    'hm(config)# no ip domain-lookup      → så den inte tuggar när du skriver fel kommando',
+    'hm(config-line)# logging synchronous → så loggar inte klipper av det du skriver',
+  ]},
+];
+
+// ---- abbreviation-tolerant command matching ----
+const CLI_WORDMAP = {
+  en:'enable', ena:'enable', enab:'enable',
+  conf:'configure', config:'configure', configu:'configure',
+  t:'terminal', te:'terminal', ter:'terminal', term:'terminal', termi:'terminal',
+  int:'interface', inte:'interface', interf:'interface',
+  vl:'vlan',
+  con:'console', cons:'console',
+  pass:'password', passw:'password',
+  add:'address', addr:'address',
+  shut:'shutdown',
+  run:'running-config', start:'startup-config',
+};
+function normCmd(s){
+  return s.toLowerCase().trim().replace(/\s+/g,' ')
+    .split(' ').map(w=>CLI_WORDMAP[w]||w).join(' ');
+}
+function cmdMatches(input, accepts){
+  const n = normCmd(input);
+  return accepts.some(a=>normCmd(a)===n);
+}
+// Cisco-style tab completion: completes the word currently being typed
+// against the matching position in one of the accepted commands.
+function tabComplete(value, accepts){
+  const endsWithSpace = /\s$/.test(value);
+  const tokens = value.trim().length ? value.trim().split(/\s+/) : [];
+  if(endsWithSpace || tokens.length===0) return null;
+  const wordIndex = tokens.length - 1;
+  const partial = tokens[wordIndex];
+  for(const acc of accepts){
+    const refTokens = acc.split(/\s+/);
+    if(wordIndex < refTokens.length){
+      const refWord = refTokens[wordIndex];
+      if(refWord.toLowerCase().startsWith(partial.toLowerCase()) && refWord.length > partial.length){
+        tokens[wordIndex] = refWord;
+        return tokens.join(' ') + ' ';
+      }
+    }
+  }
+  return null;
+}
+
+// ---- exercise generator (randomized values for replay value) ----
+const CLI_HOSTS = ['R1','R2','SW1','Switch1','Router1'];
+const CLI_PASS = ['cisco123','labb2026','natverk!'];
+const CLI_VLAN_IP = [['192.168.1.1','255.255.255.0'],['192.168.10.1','255.255.255.0'],['10.0.0.1','255.255.255.0']];
+const CLI_ROUTER_IP = [['192.168.1.1','192.168.2.1'],['10.0.0.1','10.0.1.1'],['172.16.0.1','172.16.1.1']];
+const CLI_BANNER = ['Endast behöriga användare','Obehöriga äger ej tillträde','Varning: Loggat system'];
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+function buildExercises(){
+  const H = pick(CLI_HOSTS), P = pick(CLI_PASS);
+  const [vip, vmask] = pick(CLI_VLAN_IP);
+  const [rip0, rip1] = pick(CLI_ROUTER_IP);
+  const rmask = '255.255.255.0';
+  const banner = pick(CLI_BANNER);
+
+  return [
+    { title:'Enable-lösenord', task:`Sätt ett enable-lösenord ("${P}") på ${H}, gå sedan tillbaka till bashläget.`,
+      steps:[
+        {prompt:`${H}#`, accepts:[`enable secret ${P}`, `enable password ${P}`]},
+        {prompt:`${H}#`, accepts:['exit']},
+      ]},
+    { title:'Lösenord på console-porten', task:`Sätt lösenordet "${P}" på console-porten på ${H}, och kräv inloggning.`,
+      steps:[
+        {prompt:`${H}#`, accepts:['configure terminal']},
+        {prompt:`${H}(config)#`, accepts:['line console 0']},
+        {prompt:`${H}(config-line)#`, accepts:[`password ${P}`]},
+        {prompt:`${H}(config-line)#`, accepts:['login']},
+        {prompt:`${H}(config-line)#`, accepts:['exit']},
+      ]},
+    { title:'Lösenord på Telnet/SSH (vty)', task:`Sätt lösenordet "${P}" på alla vty-linjer (0–15) på ${H}, och kräv inloggning.`,
+      steps:[
+        {prompt:`${H}>`, accepts:['enable']},
+        {prompt:`${H}#`, accepts:['configure terminal']},
+        {prompt:`${H}(config)#`, accepts:['line vty 0 15']},
+        {prompt:`${H}(config-line)#`, accepts:[`password ${P}`]},
+        {prompt:`${H}(config-line)#`, accepts:['login']},
+        {prompt:`${H}(config-line)#`, accepts:['exit']},
+      ]},
+    { title:'Spara konfigurationen', task:`Spara den aktuella konfigurationen på ${H} så den finns kvar efter omstart.`,
+      steps:[ {prompt:`${H}#`, accepts:['copy running-config startup-config']} ]},
+    { title:'Kryptera lösenorden', task:`Se till att alla lösenord i configen på ${H} lagras krypterat.`,
+      steps:[ {prompt:`${H}(config)#`, accepts:['service password-encryption']} ]},
+    { title:'Sätta en banner', task:`Sätt en login-banner (motd) på ${H} med texten "${banner}".`,
+      steps:[ {prompt:`${H}(config)#`, accepts:[`banner motd "${banner}"`, `banner motd ${banner}`]} ]},
+    { title:'IP-adress på switch (VLAN 1)', task:`Sätt IP-adress ${vip} med subnetmask ${vmask} på VLAN 1 på switchen ${H}, och öppna interfacet.`,
+      steps:[
+        {prompt:`${H}#`, accepts:['configure terminal']},
+        {prompt:`${H}(config)#`, accepts:['interface vlan 1']},
+        {prompt:`${H}(config-if)#`, accepts:[`ip address ${vip} ${vmask}`]},
+        {prompt:`${H}(config-if)#`, accepts:['no shutdown']},
+        {prompt:`${H}(config-if)#`, accepts:['exit']},
+      ]},
+    { title:'IP-adress på router (g0/0 + g0/1)', task:`Sätt IP-adress ${rip0} ${rmask} på g0/0 och ${rip1} ${rmask} på g0/1 på routern ${H}, och öppna båda interfacen.`,
+      steps:[
+        {prompt:`${H}#`, accepts:['configure terminal']},
+        {prompt:`${H}(config)#`, accepts:['interface g0/0']},
+        {prompt:`${H}(config-if)#`, accepts:[`ip address ${rip0} ${rmask}`]},
+        {prompt:`${H}(config-if)#`, accepts:['no shutdown']},
+        {prompt:`${H}(config-if)#`, accepts:['exit']},
+        {prompt:`${H}(config)#`, accepts:['interface g0/1']},
+        {prompt:`${H}(config-if)#`, accepts:[`ip address ${rip1} ${rmask}`]},
+        {prompt:`${H}(config-if)#`, accepts:['no shutdown']},
+        {prompt:`${H}(config-if)#`, accepts:['exit']},
+      ]},
+    { title:'Undvik felsökningskrångel', task:`Stäng av att ${H} försöker slå upp felskrivna kommandon som domännamn.`,
+      steps:[ {prompt:`${H}(config)#`, accepts:['no ip domain-lookup']} ]},
+    { title:'Städa loggen', task:`Se till att loggmeddelanden inte klipper av det du skriver i terminalen på ${H}.`,
+      steps:[ {prompt:`${H}(config-line)#`, accepts:['logging synchronous']} ]},
+  ];
+}
+
+RENDERERS.cli = (view)=>{
+  const card = el('div', {class:'card'});
+  card.appendChild(el('h2', {class:'section-title'}, 'CLI-kommandon — genomgång'));
+  card.appendChild(el('p', {style:'color:var(--text-dim); font-size:14px; margin-top:-6px;'},
+    'Fusklappen för de vanligaste kommandona när ni labbar. Läs igenom, klicka sedan "Starta övning" för att testa dig själv med slumpade värden.'));
+
+  CLI_GUIDE.forEach(block=>{
+    const box = el('div', {style:'margin-bottom:16px;'});
+    box.appendChild(el('div', {style:'font-weight:600; font-size:14px; margin-bottom:6px;'}, block.title));
+    const pre = el('div', {style:'background:var(--bg-raised); border:1px solid var(--line-strong); border-radius:8px; padding:12px 14px; font-family:var(--mono); font-size:13px; color:var(--text); line-height:1.7; white-space:pre-wrap;'});
+    pre.textContent = block.lines.join('\n');
+    box.appendChild(pre);
+    card.appendChild(box);
+  });
+
+  card.appendChild(el('button', {class:'btn', style:'margin-top:4px;', onclick:()=>go('cli-practice')}, 'Starta övning →'));
+  view.appendChild(card);
+};
+
+RENDERERS['cli-practice'] = (view)=>{
+  const exercises = buildExercises();
+  const card = el('div', {class:'card'});
+  card.appendChild(el('h2', {class:'section-title'}, 'CLI-kommandon — öva'));
+  card.appendChild(el('p', {style:'color:var(--text-dim); font-size:14px; margin-top:-6px;'},
+    'Välj en uppgift. Skriv kommandona ett i taget — förkortningar funkar (t.ex. "conf t", "int g0/0"), och du kan trycka Tab för att autokomplettera ordet du skriver, precis som i riktiga IOS.'));
+  card.appendChild(el('div', {class:'mode-list'}, exercises.map(ex=>
+    modeBtn(ex.title, ex.task, ()=>go('cli-exercise', {ex}))
+  )));
+  card.appendChild(el('button', {class:'btn secondary', style:'margin-top:14px;', onclick:()=>go('cli')}, '← Till genomgången'));
+  view.appendChild(card);
+};
+
+RENDERERS['cli-exercise'] = (view, opts)=>{
+  const ex = opts.ex;
+  let step = 0, fails = 0, revealed = false, done = false, ok = true;
+
+  function draw(){
+    view.innerHTML = '';
+    const card = el('div', {class:'card'});
+    card.appendChild(el('h2', {class:'section-title'}, ex.title));
+    card.appendChild(el('div', {class:'explain', style:'margin-bottom:20px;'}, ex.task));
+
+    if(step >= ex.steps.length){
+      recordAttempt('CLI-övning', ex.title, ok, ex.title+'-'+Date.now(), false);
+      card.appendChild(el('div', {class:'result-card'}, [
+        el('div', {class:'score'}, ok ? '✓' : '~'),
+        el('div', {class:'pct'}, ok ? 'Klart utan att titta på facit!' : 'Klart — men du fick titta på facit någon gång, öva gärna en gång till.'),
+        el('div', {style:'margin-top:22px; display:flex; gap:10px; justify-content:center;'}, [
+          el('button', {class:'btn', onclick:()=>go('cli-exercise', {ex: buildExercises().find(e=>e.title===ex.title) || ex})}, 'Kör igen (nya värden)'),
+          el('button', {class:'btn secondary', onclick:()=>go('cli-practice')}, '← Fler uppgifter'),
+        ]),
+      ]));
+      view.appendChild(card);
+      return;
+    }
+
+    // terminal-style transcript of completed steps
+    const term = el('div', {style:'background:#0a0d10; border:1px solid var(--line-strong); border-radius:8px; padding:14px 16px; font-family:var(--mono); font-size:13.5px; margin-bottom:16px;'});
+    for(let i=0;i<step;i++){
+      term.appendChild(el('div', {style:'color:var(--text-dim);'}, `${ex.steps[i].prompt} ${ex.steps[i].accepts[0]}`));
+    }
+    const cur = ex.steps[step];
+    const liveRow = el('div', {style:'display:flex; gap:8px; align-items:center; color:var(--accent-strong);'});
+    liveRow.appendChild(el('span', {}, cur.prompt));
+    const input = el('input', {type:'text', style:'flex:1; background:transparent; border:none; color:var(--text); font-family:var(--mono); font-size:13.5px; outline:none;'});
+    liveRow.appendChild(input);
+    term.appendChild(liveRow);
+    card.appendChild(term);
+
+    const feedback = el('div', {style:'min-height:24px; font-size:13.5px; margin-bottom:14px;'});
+    card.appendChild(feedback);
+
+    const actions = el('div', {class:'row-actions'});
+    const submit = el('button', {class:'btn', onclick:submitAnswer});
+    submit.textContent = 'Skicka';
+    actions.appendChild(el('span', {class:'badge'}, `Steg ${step+1} / ${ex.steps.length}`));
+    const revealBtn = el('button', {class:'btn secondary', onclick:()=>{
+      revealed = true; ok = false;
+      feedback.innerHTML = ''; feedback.appendChild(el('span', {style:'color:var(--amber);'}, `Rätt kommando: ${cur.accepts[0]}`));
+      step++; setTimeout(draw, 900);
+    }});
+    revealBtn.textContent = 'Visa svaret';
+    actions.appendChild(el('div', {style:'display:flex; gap:8px;'}, [revealBtn, submit]));
+    card.appendChild(actions);
+
+    function submitAnswer(){
+      if(!input.value.trim()) return;
+      if(cmdMatches(input.value, cur.accepts)){
+        feedback.innerHTML = ''; feedback.appendChild(el('span', {style:'color:var(--accent);'}, '✓ Rätt'));
+        step++; setTimeout(draw, 350);
+      } else {
+        fails++; ok = false;
+        feedback.innerHTML = ''; feedback.appendChild(el('span', {style:'color:var(--coral);'}, '✗ Inte riktigt — försök igen eller klicka Visa svaret'));
+        input.value = '';
+      }
+    }
+    input.addEventListener('keydown', e=>{
+      if(e.key==='Tab'){
+        e.preventDefault();
+        const completed = tabComplete(input.value, cur.accepts);
+        if(completed) input.value = completed;
+      } else if(e.key==='Enter'){
+        submitAnswer();
+      }
+    });
+
+    view.appendChild(card);
+    input.focus();
+  }
+  draw();
+};
+
+// =====================================================================
 // STATS
 // =====================================================================
 RENDERERS.stats = (view)=>{
   const card = el('div', {class:'card'});
-  card.appendChild(el('h2', {class:'section-title'}, 'Statistik för den här sessionen'));
+  card.appendChild(el('h2', {class:'section-title'}, 'Statistik'));
   if(SESSION.attempts.length===0){
     card.appendChild(el('div', {class:'empty'}, [
       el('div', {class:'big'}, '—'),
-      el('div', {}, 'Du har inte svarat på några frågor än. Statistiken sparas bara i den här sessionen (den nollställs om du laddar om sidan).'),
+      el('div', {}, 'Du har inte svarat på några frågor än. Statistiken sparas i den här webbläsaren och finns kvar nästa gång du öppnar sidan.'),
     ]));
     view.appendChild(card);
     return;
@@ -716,6 +1028,9 @@ RENDERERS.stats = (view)=>{
   });
   card.appendChild(table2);
   card.appendChild(el('div', {style:'margin-top:18px; color:var(--text-faint); font-size:12.5px;'}, `Frågor markerade att repetera just nu: ${SESSION.missedTentorna.size + SESSION.missedStudy.size} (se fliken "Svaga områden").`));
+  card.appendChild(el('button', {class:'btn secondary', style:'margin-top:16px;', onclick:()=>{
+    if(confirm('Nollställa all sparad statistik i den här webbläsaren?')){ resetSession(); go('stats'); }
+  }}, 'Rensa all statistik'));
   view.appendChild(card);
 };
 
