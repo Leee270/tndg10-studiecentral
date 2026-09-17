@@ -385,7 +385,7 @@ function modeBtn(title, desc, onclick){
 // =====================================================================
 // GENERIC MULTIPLE-CHOICE QUIZ ENGINE (used by tentorna / study / tentafokus / weak)
 // =====================================================================
-function runQuiz(view, {items, isTentorna, modeLabel, catTips, onFinish, allowFilter, shuffleOrder=true}){
+function runQuiz(view, {items, isTentorna, modeLabel, catTips, onFinish, allowFilter, shuffleOrder=true, shuffleOptions=false}){
   let pool = items;
   let filterCat = 'ALLA';
   let idx = 0, score = 0, answered = false, order = [];
@@ -450,13 +450,19 @@ function runQuiz(view, {items, isTentorna, modeLabel, catTips, onFinish, allowFi
     const correctSet = new Set(isMulti ? q.correct : [q.correct]);
     const optsWrap = el('div', {class:'opts'});
     const chosen = new Set();
+    // Real old-exam questions (tentorna) keep their original option order exactly.
+    // Study-trainer questions (identified by having a 'memory' field) get their
+    // options shuffled per render so the correct answer isn't always position A.
+    const doShuffle = shuffleOptions && ('memory' in q);
+    const displayOrder = doShuffle ? shuffle(q.opts.map((_,i)=>i)) : q.opts.map((_,i)=>i);
 
     function lockAndShow(){
       answered = true;
-      [...optsWrap.children].forEach((btn, i)=>{
+      [...optsWrap.children].forEach((btn, pos)=>{
+        const origIdx = displayOrder[pos];
         btn.classList.add('locked');
-        if(correctSet.has(i)) btn.classList.add('correct');
-        else if(chosen.has(i)) btn.classList.add('wrong');
+        if(correctSet.has(origIdx)) btn.classList.add('correct');
+        else if(chosen.has(origIdx)) btn.classList.add('wrong');
         else btn.classList.add('dim');
       });
       const wasCorrect = isMulti
@@ -480,17 +486,18 @@ function runQuiz(view, {items, isTentorna, modeLabel, catTips, onFinish, allowFi
       card.appendChild(actions);
     }
 
-    q.opts.forEach((optText, i)=>{
+    displayOrder.forEach((origIdx, pos)=>{
+      const optText = q.opts[origIdx];
       const btn = el('button', {class:'opt', onclick:()=>{
         if(answered) return;
         if(isMulti){
-          if(chosen.has(i)) chosen.delete(i); else chosen.add(i);
-          btn.style.borderColor = chosen.has(i) ? 'var(--accent)' : '';
+          if(chosen.has(origIdx)) chosen.delete(origIdx); else chosen.add(origIdx);
+          btn.style.borderColor = chosen.has(origIdx) ? 'var(--accent)' : '';
           return;
         }
-        chosen.add(i);
+        chosen.add(origIdx);
         lockAndShow();
-      }}, [el('span', {class:'mark'}, String.fromCharCode(65+i)+')'), el('span', {}, optText)]);
+      }}, [el('span', {class:'mark'}, String.fromCharCode(65+pos)+')'), el('span', {}, optText)]);
       optsWrap.appendChild(btn);
     });
     card.appendChild(optsWrap);
@@ -533,12 +540,12 @@ RENDERERS['tenta-exact'] = (view, opts)=>{
 };
 
 RENDERERS['quiz-study'] = (view)=>{
-  runQuiz(view, {items: STUDY, isTentorna:false, modeLabel:'Per område', allowFilter:true, catTips: TIPS});
+  runQuiz(view, {items: STUDY, isTentorna:false, modeLabel:'Per område', allowFilter:true, catTips: TIPS, shuffleOptions:true});
 };
 
 RENDERERS['tentafokus'] = (view)=>{
   const items = STUDY.filter(q=>q.exam==='1');
-  runQuiz(view, {items, isTentorna:false, modeLabel:'Tentafokus', allowFilter:true, catTips: TIPS});
+  runQuiz(view, {items, isTentorna:false, modeLabel:'Tentafokus', allowFilter:true, catTips: TIPS, shuffleOptions:true});
 };
 
 RENDERERS['weak'] = (view)=>{
@@ -553,7 +560,7 @@ RENDERERS['weak'] = (view)=>{
     ])));
     return;
   }
-  runQuiz(view, {items, isTentorna:false, modeLabel:'Svaga områden', allowFilter:false, catTips: TIPS});
+  runQuiz(view, {items, isTentorna:false, modeLabel:'Svaga områden', allowFilter:false, catTips: TIPS, shuffleOptions:true});
 };
 
 // =====================================================================
@@ -1109,7 +1116,7 @@ RENDERERS.stats = (view)=>{
 renderTabs();
 go('home');
 </script>
-  <!-- Cloudflare Web Analytics -->
+<!-- Cloudflare Web Analytics -->
 <script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "a28bacad18044149829f631ae0282111"}'></script>
 <!-- End Cloudflare Web Analytics -->
 </body>
